@@ -127,32 +127,17 @@ struct msipsu_data {
 };
 
 /* some values are SMBus LINEAR11 data which need a conversion */
-static int msipsu_linear11_to_int(u16 v16, int scale)
+static int msipsu_lin11_to_int(u16 v16, int scale, bool is_signed)
 {
 	s32 exponent;
 	s32 mantissa;
 	int val;
 
 	exponent = ((s16)v16) >> 11;
-	mantissa = ((s16)((v16 & 0x7ff) << 5)) >> 5;
-	val = mantissa * scale;
-
-	if (exponent >= 0)
-		val <<= exponent;
+	if (is_signed)
+		mantissa = ((s16)((v16 & 0x7ff) << 5)) >> 5;
 	else
-		val >>= -exponent;
-
-	return val;
-}
-
-static unsigned int msipsu_linear11_to_uint(u16 v16, int scale)
-{
-	s32 exponent;
-	u32 mantissa;
-	unsigned int val;
-
-	exponent = ((s16)v16) >> 11;
-	mantissa = (u16)(v16 & 0x7ff); /* deliberately not sign-extending here */
+		mantissa = (u16)(v16 & 0x7ff); /* deliberately not sign-extending here */
 	val = mantissa * scale;
 
 	if (exponent >= 0)
@@ -288,18 +273,6 @@ static int msipsu_write_fan_settings(struct msipsu_data *priv, u8 mode, long pwm
 	return msipsu_save_settings(priv);
 }
 
-static u8 msipsu_parse_multirail(u8 in)
-{
-	switch (in) {
-	case PSU_MULTI_RAIL_DISABLED:
-		return 0;
-	case PSU_MULTI_RAIL_ENABLED:
-		return 1;
-	default:
-		return 0xff;
-	}
-}
-
 static int msipsu_get_all_values(struct msipsu_data *priv)
 {
 	const u8 read_cmd[] = {PSU_READ, PSU_REG_READ_EVERYTHING};
@@ -316,14 +289,13 @@ static int msipsu_get_all_values(struct msipsu_data *priv)
 static int msipsu_get_value(struct msipsu_data *priv, u8 cmd, long *val)
 {
 	u8 data[REPLY_SIZE];
-	u16 tmp16;
 	const u8 read_cmd[] = {PSU_READ, cmd};
 	int ret = msipsu_usb_cmd_locked(priv, read_cmd, sizeof(read_cmd), data);
 
 	if (ret < 0)
 		return ret;
 
-	tmp16 = (data[1] << 8) + data[0];
+	u16 tmp16 = (data[1] << 8) + data[0];
 
 	switch (cmd) {
 	case PSU_REG_IN_VOLTS:
@@ -334,16 +306,16 @@ static int msipsu_get_value(struct msipsu_data *priv, u8 cmd, long *val)
 	case PSU_REG_VOUT_3V:
 	case PSU_REG_IOUT_3V:
 	case PSU_REG_TEMP0:
-		*val = msipsu_linear11_to_int(tmp16, 1000);
+		*val = msipsu_lin11_to_int(tmp16, 1000, true);
 		break;
 	case PSU_REG_EFFICIENCY:
-		*val = msipsu_linear11_to_int(tmp16, 100);
+		*val = msipsu_lin11_to_int(tmp16, 100, true);
 		break;
 	case PSU_REG_FAN_RPM:
-		*val = msipsu_linear11_to_uint(tmp16, 1);
+		*val = msipsu_lin11_to_int(tmp16, 1, false);
 		break;
 	case PSU_REG_TOTAL_WATTS:
-		*val = msipsu_linear11_to_int(tmp16, 1000000);
+		*val = msipsu_lin11_to_int(tmp16, 1000000, true);
 		break;
 	case PSU_REG_FAN_MODE:
 	case PSU_REG_FAN_DUTY_CYCLE:
@@ -353,7 +325,17 @@ static int msipsu_get_value(struct msipsu_data *priv, u8 cmd, long *val)
 		*val = ((long)data[3] << 24) + (data[2] << 16) + tmp16;
 		break;
 	case PSU_REG_MULTIRAIL:
-		*val = msipsu_parse_multirail(data[0]);
+		switch (data[0]) {
+		case PSU_MULTI_RAIL_DISABLED:
+			*val = 0;
+			break;
+		case PSU_MULTI_RAIL_ENABLED:
+			*val = 1;
+			break;
+		default:
+			*val = 0xff;
+			break;
+		}
 		break;
 	default:
 		ret = -EOPNOTSUPP;
@@ -396,9 +378,9 @@ static int msipsu_hwmon_ops_read(struct device *dev, enum hwmon_sensor_types typ
 	}
 
 	if (type == hwmon_temp && attr == hwmon_temp_input) {
-		*val = msipsu_linear11_to_int(priv->data.temp, 1000);
+		*val = msipsu_lin11_to_int(priv->data.temp, 1000, true);
 	} else if (type == hwmon_fan && attr == hwmon_fan_input) {
-		*val = msipsu_linear11_to_uint(priv->data.fan_speed, 1);
+		*val = msipsu_lin11_to_int(priv->data.fan_speed, 1, false);
 	} else if (type == hwmon_pwm) {
 		switch (attr) {
 		case hwmon_pwm_enable:
@@ -415,20 +397,20 @@ static int msipsu_hwmon_ops_read(struct device *dev, enum hwmon_sensor_types typ
 			break;
 		}
 	} else if (type == hwmon_power && attr == hwmon_power_input) {
-		*val = msipsu_linear11_to_int(priv->data.watts, 1000000);
+		*val = msipsu_lin11_to_int(priv->data.watts, 1000000, true);
 	} else if (type == hwmon_in && attr == hwmon_in_input) {
 		switch (channel) {
 		case 0:
 			ret = msipsu_get_value(priv, PSU_REG_IN_VOLTS, val);
 			break;
 		case 1:
-			*val = msipsu_linear11_to_int(priv->data.v12[COMBINED_12V].volts, 1000);
+			*val = msipsu_lin11_to_int(priv->data.v12[COMBINED_12V].volts, 1000, true);
 			break;
 		case 2:
-			*val = msipsu_linear11_to_int(priv->data.v5.volts, 1000);
+			*val = msipsu_lin11_to_int(priv->data.v5.volts, 1000, true);
 			break;
 		case 3:
-			*val = msipsu_linear11_to_int(priv->data.v3.volts, 1000);
+			*val = msipsu_lin11_to_int(priv->data.v3.volts, 1000, true);
 			break;
 		default:
 			return -EOPNOTSUPP;
@@ -436,13 +418,13 @@ static int msipsu_hwmon_ops_read(struct device *dev, enum hwmon_sensor_types typ
 	} else if (type == hwmon_curr && attr == hwmon_curr_input) {
 		switch (channel) {
 		case 0:
-			*val = msipsu_linear11_to_int(priv->data.v12[COMBINED_12V].amps, 1000);
+			*val = msipsu_lin11_to_int(priv->data.v12[COMBINED_12V].amps, 1000, true);
 			break;
 		case 1:
-			*val = msipsu_linear11_to_int(priv->data.v5.amps, 1000);
+			*val = msipsu_lin11_to_int(priv->data.v5.amps, 1000, true);
 			break;
 		case 2:
-			*val = msipsu_linear11_to_int(priv->data.v3.amps, 1000);
+			*val = msipsu_lin11_to_int(priv->data.v3.amps, 1000, true);
 			break;
 		default:
 			return -EOPNOTSUPP;
@@ -617,7 +599,7 @@ static int efficiency_show(struct seq_file *seqf, void *unused)
 		return 0;
 	}
 
-	seq_printf(seqf, "%d\n", msipsu_linear11_to_int(priv->data.eff, 100));
+	seq_printf(seqf, "%d\n", msipsu_lin11_to_int(priv->data.eff, 100, true));
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(efficiency);
@@ -786,4 +768,4 @@ module_hid_driver(msipsu_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jack Doan <me@jackdoan.com>");
-MODULE_DESCRIPTION("Linux driver for MSI power supplies with HID sensors interface");
+MODULE_DESCRIPTION("Driver for MSI power supplies with HID sensor interface");
