@@ -57,8 +57,8 @@
 #define PSU_REG_SERIAL 0x13 /* accepted, but returns all zeros */
 
 #define PSU_REG_IN_VOLTS 0x20
-#define PSU_REG_VOUT_12V_ALL 0x22
-#define PSU_REG_IOUT_12V_ALL 0x23
+#define PSU_REG_VOUT_12V_EACH_RAIL 0x22
+#define PSU_REG_IOUT_12V_EACH_RAIL 0x23
 #define PSU_REG_VOUT_12V 0x24
 #define PSU_REG_IOUT_12V 0x25
 #define PSU_REG_VOUT_5V 0x26
@@ -120,8 +120,8 @@ struct msipsu_data {
 	u8 *cmd_buffer;
 	char vendor[REPLY_SIZE];
 	char product[REPLY_SIZE];
-    struct debugfs_blob_wrapper vendor_blob;
-    struct debugfs_blob_wrapper product_blob;
+	struct debugfs_blob_wrapper vendor_blob;
+	struct debugfs_blob_wrapper product_blob;
 	struct msipsu_all data;
 	ktime_t last_read_all;
 };
@@ -239,20 +239,20 @@ static int msipsu_init(struct msipsu_data *priv)
 	 * This init message is replied to with the model name of the PSU.
 	 */
 	const u8 init[] = {PSU_INIT, 0x51};
-    const u8 read_vendor[] = {PSU_READ, PSU_REG_VEND_STR};
+	const u8 read_vendor[] = {PSU_READ, PSU_REG_VEND_STR};
+	int ret;
 
-    priv->vendor_blob.data = priv->vendor;
-    priv->product_blob.data = priv->product;
-
-	int ret = msipsu_usb_cmd(priv, init, sizeof(init), priv->product);
-    if (ret < 0)
-        return ret;
-    ret = msipsu_usb_cmd(priv, read_vendor, sizeof(read_vendor), priv->vendor);
-    if (ret < 0)
-        return ret;
-    priv->vendor_blob.size = strnlen(priv->vendor, sizeof(priv->vendor));
-    priv->product_blob.size = strnlen(priv->product, sizeof(priv->product));
-    return ret;
+	ret = msipsu_usb_cmd(priv, init, sizeof(init), priv->product);
+	if (ret < 0)
+		return ret;
+	ret = msipsu_usb_cmd(priv, read_vendor, sizeof(read_vendor), priv->vendor);
+	if (ret < 0)
+		return ret;
+	priv->vendor_blob.data = priv->vendor;
+	priv->product_blob.data = priv->product;
+	priv->vendor_blob.size = strnlen(priv->vendor, sizeof(priv->vendor));
+	priv->product_blob.size = strnlen(priv->product, sizeof(priv->product));
+	return ret;
 }
 
 static int msipsu_save_settings(struct msipsu_data *priv)
@@ -361,27 +361,6 @@ static int msipsu_get_value(struct msipsu_data *priv, u8 cmd, long *val)
 	}
 
 	return ret;
-}
-
-static int msipsu_write_rail_setting(struct msipsu_data *priv, bool multi_enabled)
-{
-	long currently_enabled;
-	int ret = msipsu_get_value(priv, PSU_REG_MULTIRAIL, &currently_enabled);
-
-	if (ret < 0)
-		return ret;
-
-	/* hardware returns an error if we try to set the mode to the current mode. Avoid this. */
-	if (currently_enabled == multi_enabled)
-		return 0;
-
-	u8 to_write = multi_enabled ? PSU_MULTI_RAIL_ENABLED : PSU_MULTI_RAIL_DISABLED;
-	const u8 cmd[] = {PSU_WRITE, PSU_REG_MULTIRAIL, to_write};
-
-	ret = msipsu_usb_cmd_locked(priv, cmd, sizeof(cmd), NULL);
-	if (ret < 0)
-		return ret;
-	return msipsu_save_settings(priv);
 }
 
 static umode_t msipsu_hwmon_ops_is_visible(const void *data, enum hwmon_sensor_types type,
@@ -539,66 +518,6 @@ static int msipsu_hwmon_ops_write(struct device *dev, enum hwmon_sensor_types ty
 	}
 }
 
-static ssize_t attr_read(struct device *dev,
-			 struct device_attribute *devattr,
-			 char *buf, u8 to_read)
-{
-	struct msipsu_data *priv = dev_get_drvdata(dev);
-	long val = 0;
-	int ret = msipsu_get_value(priv, to_read, &val);
-
-	if (ret < 0)
-		return (ssize_t)ret;
-
-	return sprintf(buf, "%ld\n", val);
-}
-
-static ssize_t multi_rail_enabled_show(struct device *dev, struct device_attribute *devattr,
-				       char *buf)
-{
-	struct msipsu_data *priv = dev_get_drvdata(dev);
-	long val = 0;
-	int ret = msipsu_get_value(priv, PSU_REG_MULTIRAIL, &val);
-
-	if (ret < 0)
-		return (ssize_t)ret;
-
-	return sprintf(buf, "%ld\n", val);
-}
-
-static ssize_t multi_rail_enabled_store(struct device *dev, struct device_attribute *devattr,
-					const char *buf, size_t len)
-{
-	int ret;
-	struct msipsu_data *priv = dev_get_drvdata(dev);
-
-	if (len < 1)
-		return -EINVAL;
-
-	switch (buf[0]) {
-	case '0':
-		ret = msipsu_write_rail_setting(priv, false);
-		break;
-	case '1':
-		ret = msipsu_write_rail_setting(priv, true);
-		break;
-	default:
-		return -EINVAL;
-	}
-	if (ret == 0)
-		return (ssize_t)len;
-	return ret;
-}
-
-static DEVICE_ATTR_RW(multi_rail_enabled);
-
-static struct attribute *msipsu_attrs[] = {
-	&dev_attr_multi_rail_enabled.attr,
-	NULL
-};
-
-ATTRIBUTE_GROUPS(msipsu);
-
 static const struct hwmon_ops msipsu_hwmon_ops = {
 	.is_visible = msipsu_hwmon_ops_is_visible,
 	.read = msipsu_hwmon_ops_read,
@@ -690,67 +609,60 @@ DEFINE_SHOW_ATTRIBUTE(revision);
 
 static int efficiency_show(struct seq_file *seqf, void *unused)
 {
-    struct msipsu_data *priv = seqf->private;
-    int ret = msipsu_get_all_values(priv);
+	struct msipsu_data *priv = seqf->private;
+	int ret = msipsu_get_all_values(priv);
 
-    if (ret < 0) {
-        seq_puts(seqf, "N/A\n");
-        return 0;
-    }
+	if (ret < 0) {
+		seq_puts(seqf, "N/A\n");
+		return 0;
+	}
 
-    seq_printf(seqf, "%d\n", msipsu_linear11_to_int(priv->data.eff, 100));
-    return 0;
+	seq_printf(seqf, "%d\n", msipsu_linear11_to_int(priv->data.eff, 100));
+	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(efficiency);
 
-static ssize_t multi_rail_enabled_read(struct file *file, char __user *user_buf,
-                                   size_t count, loff_t *ppos)
+static int multi_rail_read(void *data, u64 *val)
 {
-    struct msipsu_data *priv = file->private_data;
-    long val = 0;
-    int ret = msipsu_get_value(priv, PSU_REG_MULTIRAIL, &val);
-
-    if (ret < 0)
-        return (ssize_t)ret;
-
-    return simple_read_from_buffer(user_buf, count, ppos, buf, len);
+	return msipsu_get_value((struct msipsu_data *)data, PSU_REG_MULTIRAIL, (long *)val);
 }
 
-static ssize_t multi_rail_enabled_write(struct file *file,
-                                    const char __user *user_buf,
-                                    size_t count, loff_t *ppos)
+static int msipsu_write_rail_setting(struct msipsu_data *priv, bool multi_enabled)
 {
-    int ret;
-    struct msipsu_data *priv = file->private_data;
+	long currently_enabled;
+	int ret = msipsu_get_value(priv, PSU_REG_MULTIRAIL, &currently_enabled);
 
-    if (count < 1)
-        return -EINVAL;
+	if (ret < 0)
+		return ret;
 
-    switch (user_buf[0]) {
-        case '0':
-            ret = msipsu_write_rail_setting(priv, false);
-            break;
-        case '1':
-            ret = msipsu_write_rail_setting(priv, true);
-            break;
-        default:
-            return -EINVAL;
-    }
-    if (ret == 0)
-        return (ssize_t)count;
-    return ret;
+	/* hardware returns an error if we try to set the mode to the current mode. Avoid this. */
+	if (currently_enabled == multi_enabled)
+		return 0;
+
+	u8 to_write = multi_enabled ? PSU_MULTI_RAIL_ENABLED : PSU_MULTI_RAIL_DISABLED;
+	const u8 cmd[] = {PSU_WRITE, PSU_REG_MULTIRAIL, to_write};
+
+	ret = msipsu_usb_cmd_locked(priv, cmd, sizeof(cmd), NULL);
+	if (ret < 0)
+		return ret;
+	return msipsu_save_settings(priv);
 }
 
-static const struct file_operations multi_rail_enabled_fops = {
-    .read = pvt_ts_coeff_j_read,
-    .write = pvt_ts_coeff_j_write,
-    .open = simple_open,
-    .owner = THIS_MODULE,
-    .llseek = default_llseek,
-};
+static int multi_rail_write(void *data, u64 val)
+{
+	struct msipsu_data *priv = data;
 
+	switch (val) {
+	case 0:
+		return msipsu_write_rail_setting(priv, false);
+	case 1:
+		return msipsu_write_rail_setting(priv, true);
+	default:
+		return -EINVAL;
+	}
+}
 
-DEFINE_SIMPLE_ATTRIBUTE(multi_rail_enabled_fops, NULL, add_write_op, "%llu\n");
+DEFINE_SIMPLE_ATTRIBUTE(multi_rail_fops, multi_rail_read, multi_rail_write, "%llu\n");
 
 static void msipsu_debugfs_init(struct msipsu_data *priv)
 {
@@ -761,10 +673,11 @@ static void msipsu_debugfs_init(struct msipsu_data *priv)
 	priv->debugfs = debugfs_create_dir(name, NULL);
 	debugfs_create_file("uptime", 0444, priv->debugfs, priv, &uptime_fops);
 	debugfs_create_file("uptime_total", 0444, priv->debugfs, priv, &uptime_total_fops);
-    debugfs_create_blob("vendor", 0444, priv->debugfs, &priv->vendor_blob);
-    debugfs_create_blob("product", 0444, priv->debugfs, &priv->product_blob);
+	debugfs_create_blob("vendor", 0444, priv->debugfs, &priv->vendor_blob);
+	debugfs_create_blob("product", 0444, priv->debugfs, &priv->product_blob);
 	debugfs_create_file("revision", 0444, priv->debugfs, priv, &revision_fops);
-    debugfs_create_file("efficiency", 0444, priv->debugfs, priv, &efficiency_fops);
+	debugfs_create_file("efficiency", 0444, priv->debugfs, priv, &efficiency_fops);
+	debugfs_create_file("multi_rail_enabled", 0644, priv->debugfs, priv, &multi_rail_fops);
 }
 
 #else
@@ -814,7 +727,7 @@ static int msipsu_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	}
 
 	priv->hwmon_dev = hwmon_device_register_with_info(&hdev->dev, "msipsu", priv,
-							  &msipsu_chip_info, msipsu_groups);
+							  &msipsu_chip_info, NULL);
 
 	if (IS_ERR(priv->hwmon_dev)) {
 		ret = PTR_ERR(priv->hwmon_dev);
