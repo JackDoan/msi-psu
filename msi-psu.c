@@ -217,7 +217,7 @@ static int msipsu_usb_cmd_locked(struct msipsu_data *priv, const u8 *in, size_t 
 	return ret;
 }
 
-static int msipsu_init(struct msipsu_data *priv)
+static int msipsu_fw_init(struct msipsu_data *priv)
 {
 	/*
 	 * Vendor SW always begins with a message of [0xfa, 0x51]
@@ -702,10 +702,10 @@ static int msipsu_probe(struct hid_device *hdev, const struct hid_device_id *id)
 
 	hid_device_io_start(hdev);
 
-	ret = msipsu_init(priv);
+	ret = msipsu_fw_init(priv);
 	if (ret < 0) {
 		dev_err(&hdev->dev, "unable to initialize device (%d)\n", ret);
-		goto fail_and_stop;
+		goto fail_and_close;
 	}
 
 	priv->hwmon_dev = hwmon_device_register_with_info(&hdev->dev, "msipsu", priv,
@@ -750,6 +750,16 @@ static int msipsu_raw_event(struct hid_device *hdev, struct hid_report *report, 
 	return 0;
 }
 
+#ifdef CONFIG_PM
+static int msipsu_resume(struct hid_device *hdev)
+{
+	struct msipsu_data *priv = hid_get_drvdata(hdev);
+
+	/* some PSUs turn off the microcontroller during standby, so a reinit is required */
+	return msipsu_fw_init(priv);
+}
+#endif
+
 static const struct hid_device_id msipsu_idtable[] = {
 	{ HID_USB_DEVICE(0xdb0, 0x56d4) }, /* MEG Ai1300P */
 	{ HID_USB_DEVICE(0xdb0, 0xe749) }, /* MEG Ai1000P */
@@ -763,8 +773,28 @@ static struct hid_driver msipsu_driver = {
 	.probe		= msipsu_probe,
 	.remove		= msipsu_remove,
 	.raw_event	= msipsu_raw_event,
+#ifdef CONFIG_PM
+	.resume		= msipsu_resume,
+	.reset_resume	= msipsu_resume,
+#endif
 };
-module_hid_driver(msipsu_driver);
+
+static int __init msipsu_init(void)
+{
+	return hid_register_driver(&msipsu_driver);
+}
+
+static void __exit msipsu_exit(void)
+{
+	hid_unregister_driver(&msipsu_driver);
+}
+
+/*
+ * With module_init() the driver would load before the HID bus when
+ * built-in, so use late_initcall() instead.
+ */
+late_initcall(msipsu_init);
+module_exit(msipsu_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jack Doan <me@jackdoan.com>");
