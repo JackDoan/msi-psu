@@ -43,58 +43,58 @@
 
 #define DRIVER_NAME "msi-psu"
 
-#define REPLY_SIZE 40 /* max length of a reply to a single command */
-#define SAMPLE_INTERVAL_MS 50
-#define CMD_BUFFER_SIZE 64
-#define CMD_TIMEOUT_MS 250
-#define SECONDS_PER_HOUR (60 * 60)
-#define SECONDS_PER_DAY (SECONDS_PER_HOUR * 24)
+#define REPLY_SIZE	40 /* max length of a reply to a single command */
+#define SAMPLE_INTERVAL_MS	50
+#define CMD_BUFFER_SIZE	64
+#define CMD_TIMEOUT_MS	250
+#define SECONDS_PER_HOUR	(60 * 60)
+#define SECONDS_PER_DAY	(SECONDS_PER_HOUR * 24)
 
-#define PSU_NAK 0xFE
-#define PSU_REG_VEND_STR 0x10
-#define PSU_REG_PROD_STR 0x11
-#define PSU_REG_REVISION 0x12
-#define PSU_REG_SERIAL 0x13 /* accepted, but returns all zeros */
+#define PSU_NAK	0xFE
+#define PSU_REG_VEND_STR	0x10
+#define PSU_REG_PROD_STR	0x11
+#define PSU_REG_REVISION	0x12
+#define PSU_REG_SERIAL	0x13 /* accepted, but returns all zeros */
 
-#define PSU_REG_IN_VOLTS 0x20
-#define PSU_REG_VOUT_12V_EACH_RAIL 0x22
-#define PSU_REG_IOUT_12V_EACH_RAIL 0x23
-#define PSU_REG_VOUT_12V 0x24
-#define PSU_REG_IOUT_12V 0x25
-#define PSU_REG_VOUT_5V 0x26
-#define PSU_REG_IOUT_5V 0x27
-#define PSU_REG_VOUT_3V 0x28
-#define PSU_REG_IOUT_3V 0x29
-#define PSU_REG_TOTAL_WATTS 0x2A
-#define PSU_REG_EFFICIENCY 0x2B
-#define PSU_REG_TEMP0 0x30
-#define PSU_REG_FAN_RPM 0x40
-#define PSU_REG_FAN_MODE 0x41
-#define PSU_REG_FAN_DUTY_CYCLE 0x42
+#define PSU_REG_IN_VOLTS	0x20
+#define PSU_REG_VOUT_12V_EACH_RAIL	0x22
+#define PSU_REG_IOUT_12V_EACH_RAIL	0x23
+#define PSU_REG_VOUT_12V	0x24
+#define PSU_REG_IOUT_12V	0x25
+#define PSU_REG_VOUT_5V	0x26
+#define PSU_REG_IOUT_5V	0x27
+#define PSU_REG_VOUT_3V	0x28
+#define PSU_REG_IOUT_3V	0x29
+#define PSU_REG_TOTAL_WATTS	0x2A
+#define PSU_REG_EFFICIENCY	0x2B
+#define PSU_REG_TEMP0	0x30
+#define PSU_REG_FAN_RPM	0x40
+#define PSU_REG_FAN_MODE	0x41
+#define PSU_REG_FAN_DUTY_CYCLE	0x42
 
-#define PSU_REG_MULTIRAIL 0xC0
-#define PSU_REG_UNKNOWN_C4 0xC4
-#define PSU_REG_UNKNOWN_C6 0xC6
+#define PSU_REG_MULTIRAIL	0xC0
+#define PSU_REG_UNKNOWN_C4	0xC4
+#define PSU_REG_UNKNOWN_C6	0xC6
 
-#define PSU_REG_UPTIME 0xD0
-#define PSU_REG_TOTAL_UPTIME 0xD1
+#define PSU_REG_UPTIME	0xD0
+#define PSU_REG_TOTAL_UPTIME	0xD1
 
-#define PSU_REG_READ_EVERYTHING 0xE0
-#define PSU_REG_SAVE_SETTINGS 0xF1
+#define PSU_REG_READ_EVERYTHING	0xE0
+#define PSU_REG_SAVE_SETTINGS	0xF1
 
-#define PSU_INIT 0xFA
-#define PSU_READ 0x51
-#define PSU_WRITE 0x50
+#define PSU_INIT	0xFA
+#define PSU_READ	0x51
+#define PSU_WRITE	0x50
 
-#define PSU_MULTI_RAIL_ENABLED 2
-#define PSU_MULTI_RAIL_DISABLED 1
+#define PSU_MULTI_RAIL_ENABLED	2
+#define PSU_MULTI_RAIL_DISABLED	1
 
-#define COMBINED_12V 5
+#define COMBINED_12V	5
 
-#define FAN_MODE_MANUAL 3
-#define FAN_MODE_AUTO 1
-#define FAN_SPEED_MAX 100
-#define FAN_SPEED_MIN 0
+#define FAN_MODE_MANUAL	3
+#define FAN_MODE_AUTO	1
+#define FAN_SPEED_MAX	100
+#define FAN_SPEED_MIN	0
 
 struct volt_amp_pair {
 	u16 volts;
@@ -198,7 +198,7 @@ static int msipsu_usb_cmd(struct msipsu_data *priv, const u8 *in, size_t in_len,
 	 */
 	if (in[0] != priv->cmd_buffer[0] || in[1] != priv->cmd_buffer[1])
 		return -EOPNOTSUPP;
-	else if (in[2] != PSU_NAK && priv->cmd_buffer[2] == PSU_NAK)
+	else if (in_len >= 3 && in[2] != PSU_NAK && priv->cmd_buffer[2] == PSU_NAK)
 		return -EINVAL;
 
 	if (data)
@@ -486,10 +486,10 @@ static int msipsu_hwmon_ops_write(struct device *dev, enum hwmon_sensor_types ty
 	switch (attr) {
 	case hwmon_pwm_enable:
 		switch (val) {
-		case FAN_MODE_AUTO:
-			return msipsu_write_fan_settings(priv, val, FAN_SPEED_MIN);
-		case FAN_MODE_MANUAL:
-			return msipsu_write_fan_settings(priv, val, FAN_SPEED_MAX);
+		case 1: /* manual mode */
+			return msipsu_write_fan_settings(priv, FAN_MODE_MANUAL, FAN_SPEED_MAX);
+		case 2: /* auto mode */
+			return msipsu_write_fan_settings(priv, FAN_MODE_AUTO, FAN_SPEED_MIN);
 		default:
 			return -EINVAL;
 		}

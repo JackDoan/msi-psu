@@ -38,8 +38,8 @@ in3_input               Voltage of the 3.3v psu rail
 power1_input            Total power usage
 pwm1                    PWM value for fan1. Writes to this file will switch set
                         pwm1_enable to manual control mode
-pwm1_enable             PWM mode for fan1. (1) means "auto", and uses the
-                        built-in fan curve. (3) means manual control
+pwm1_enable             PWM mode for fan1. (2) means "auto", and uses the
+                        built-in fan curve. (1) means manual control
 temp1_input             Temperature of the psu
 ======================= ========================================================
 
